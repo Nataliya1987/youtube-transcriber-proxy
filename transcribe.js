@@ -1,42 +1,24 @@
-import fetch from 'node-fetch';
-
 export default async function handler(req, res) {
-  const videoId = req.query.id;
+  const { v } = req.query;
+  if (!v) return res.status(400).json({ error: 'Missing video ID' });
 
-  if (!videoId) {
-    return res.status(400).json({ error: 'Не указан videoId' });
-  }
+  const url = \`https://www.youtube.com/watch?v=\${v}\`;
+  const html = await fetch(url).then(r => r.text());
+  const match = html.match(/\bytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*var/);
 
-  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0',
-      'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
-    },
-  });
+  if (!match) return res.status(500).json({ error: 'No ytInitialPlayerResponse found' });
 
-  const html = await pageRes.text();
+  const playerResponse = JSON.parse(match[1]);
+  const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-  const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
-  if (!match) {
-    return res.status(500).json({ error: 'Не удалось найти ytInitialPlayerResponse' });
-  }
+  if (!captionTracks?.length) return res.status(404).json({ error: 'No subtitles found' });
 
-  const data = JSON.parse(match[1]);
-  const track = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.find(
-    t => t.languageCode === 'ru' && t.kind === 'asr'
-  );
+  const track = captionTracks.find(t => t.languageCode === 'ru' && t.kind === 'asr')
+    || captionTracks.find(t => t.languageCode === 'ru');
 
-  if (!track) {
-    return res.status(404).json({ error: 'Субтитры не найдены' });
-  }
+  if (!track) return res.status(404).json({ error: 'No Russian subtitles found' });
 
-  const subtitleRes = await fetch(track.baseUrl + '&fmt=json3');
-  const subtitleJson = await subtitleRes.json();
-
-  const result = subtitleJson.events
-    .map(e => e.segs?.map(s => s.utf8).join(''))
-    .filter(Boolean)
-    .join(' ');
-
-  res.status(200).json({ text: result });
+  const transcript = await fetch(track.baseUrl).then(r => r.text());
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.send(transcript);
 }
